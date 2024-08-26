@@ -2,17 +2,7 @@ const std = @import("std");
 const ascii = @import("std").ascii;
 const mem = @import("std").mem;
 const String = @import("./string.zig");
-
-const IdentifierStr = []const u8;
-const NumVal = f32;
-
-const Token = union(enum) {
-    EOF: void,
-    Def: void,
-    Extern: void,
-    Identifer: IdentifierStr,
-    Number: NumVal,
-};
+const Token = @import("./token.zig").Token;
 
 pub const Scanner = struct {
     i: usize,
@@ -21,6 +11,10 @@ pub const Scanner = struct {
 
     pub fn init(src: []const u8) Self {
         return Self{ .i = 0, .src = src };
+    }
+
+    fn skipNext(self: *Self) void {
+        self.i += 1;
     }
 
     fn next(self: *Self) u8 {
@@ -48,6 +42,10 @@ pub const Scanner = struct {
     }
 
     fn identifier(self: *Self) !?Token {
+        if (!ascii.isAlphabetic(self.check())) {
+            return null;
+        }
+
         var id = try String.init("");
         while (ascii.isAlphanumeric(self.check())) {
             try id.add(self.next());
@@ -62,7 +60,7 @@ pub const Scanner = struct {
         if (mem.eql(u8, id_str, "extern")) {
             return Token.Extern;
         }
-        return Token{ .Identifer = id_str };
+        return Token{ .Identifier = id_str };
     }
 
     fn number(self: *Self) !?Token {
@@ -76,25 +74,36 @@ pub const Scanner = struct {
         return Token{ .Number = try std.fmt.parseFloat(f32, numStr.str()) };
     }
 
-    fn comment(self: *Self) void {
-        if (self.check() == '#') {
-            _ = self.next();
-            var v = self.next();
-            while (!(v == '\n' or v == '\r' or v == '0')) : (v = self.next()) {}
+    fn token(self: *Self) !Token {
+        const v = self.next();
+        return Token{ .Token = v };
+    }
+
+    fn comment(self: *Self) ![]const u8 {
+        var str = try String.init("");
+        self.skipNext();
+
+        var v = self.next();
+        while (!(v == '\n' or v == '\r' or v == '0')) : (v = self.next()) {
+            try str.add(v);
         }
+        return str.str();
     }
 
     pub fn nextToken(self: *Self) !Token {
         self.skipWhiteSpace();
-        if (try self.identifier() orelse try self.number()) |token| {
-            return token;
+        if (try self.identifier() orelse try self.number()) |t| {
+            return t;
+        }
+        if (self.check() == 0) {
+            return Token.EOF;
+        }
+        if (self.check() == '#') {
+            _ = try self.comment();
+            self.skipNext();
+            return self.nextToken();
         } else {
-            self.comment();
-            if (self.next() == '0') {
-                return Token.EOF;
-            } else {
-                return self.nextToken();
-            }
+            return self.token();
         }
     }
 };
@@ -113,23 +122,40 @@ test "extern" {
     try std.testing.expectEqual(v, Token.Extern);
 }
 
-// test "identifier" {
-//     const src = "name ";
-//     var scanner = Scanner.init(src);
-//     const v: Token = try scanner.identifier() orelse @panic("unexpected");
-//     try std.testing.expect(std.meta.eql(v, Token{ .Identifer = "name" }));
-// }
-//
-// test "number" {
-//     const src = "123";
-//     var scanner = Scanner.init(src);
-//     const v: Token = try scanner.number() orelse @panic("unexpected");
-//     try std.testing.expect(std.meta.eql(v, Token{ .Number = @as(123, f32) }));
-// }
+test "identifier" {
+    const src = "name ";
+    var scanner = Scanner.init(src);
+    const v: Token = try scanner.identifier() orelse @panic("unexpected");
+    try std.testing.expectEqualDeep(v, Token{ .Identifier = "name" });
+}
+
+test "not identifier" {
+    const src = "123.1";
+    var scanner = Scanner.init(src);
+    const v = try scanner.identifier();
+    try std.testing.expectEqual(v, null);
+}
+
+test "number" {
+    const src = "123";
+    var scanner = Scanner.init(src);
+    const v: Token = try scanner.number() orelse @panic("unexpected");
+    try std.testing.expectEqualDeep(v, Token{ .Number = @as(f32, 123) });
+}
+
+test "float" {
+    const src = "123.1";
+    var scanner = Scanner.init(src);
+    const v: Token = try scanner.number() orelse @panic("unexpected");
+    try std.testing.expectEqualDeep(v, Token{ .Number = @as(f32, 123.1) });
+}
 
 test "nextToken" {
-    const src = "##........ \n extern  def name";
+    const src = "##........ \n extern  def name (";
     var scanner = Scanner.init(src);
     try std.testing.expectEqual(try scanner.nextToken(), Token.Extern);
     try std.testing.expectEqual(try scanner.nextToken(), Token.Def);
+    try std.testing.expectEqualDeep(try scanner.nextToken(), Token{ .Identifier = "name" });
+    try std.testing.expectEqualDeep(try scanner.nextToken(), Token{ .Token = '(' });
+    try std.testing.expectEqualDeep(try scanner.nextToken(), Token.EOF);
 }
