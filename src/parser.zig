@@ -1,11 +1,11 @@
 const std = @import("std");
 const _scanner = @import("scanner.zig");
 const Scanner = _scanner.Scanner;
-const Token = _scanner.Token;
+const Token = @import("token.zig").Token;
 const ast = @import("ast.zig");
 
 fn logError(comptime ReturnType: type, msg: []const u8) ?ReturnType {
-    std.debug.print("{s}", .{msg});
+    std.debug.print("{s} \n", .{msg});
     return null;
 }
 
@@ -22,11 +22,14 @@ const Parser = struct {
         hash.put('-', 20) catch unreachable;
         hash.put('*', 40) catch unreachable;
 
-        return Self{
+        var parser = Self{
             .binaryOperatorPrecedence = hash,
-            .currentToken = scanner.nextToken() catch @panic("scanner is empty"),
+            .currentToken = Token.EOF,
             .scanner = scanner,
         };
+
+        parser.moveNext();
+        return parser;
     }
 
     pub fn deinit(self: *Self) void {
@@ -46,7 +49,9 @@ const Parser = struct {
     }
 
     fn moveNext(self: *Self) void {
-        self.currentToken = self.scanner.nextToken() catch @panic("scanner is empty");
+        const n = self.scanner.nextToken() catch @panic("scanner is empty");
+        std.debug.print("{s}\n", .{n});
+        self.currentToken = n;
     }
 
     fn nextIs(self: Self, target: Token) bool {
@@ -62,10 +67,12 @@ const Parser = struct {
 
     // numberexpr ::= number
     fn parseNumber(self: *Self) ?ast.ExprAst {
-        return switch (self.currentToken) {
+        const num = switch (self.currentToken) {
             .Number => ast.ExprAst{ .Number = ast.NumberExpr.init(self.currentToken.Number) },
             else => unreachable,
         };
+        self.moveNext();
+        return num;
     }
 
     // parenexpr ::= '(' expression ')'
@@ -89,14 +96,15 @@ const Parser = struct {
     // identifierexpr
     //   ::= identifier
     //   ::= identifier '(' expression* ')' // function call
-    fn parseIdentiferExpr(self: *Self) ?ast.ExprAst {
-        const name = self.currentToken.unwrapIdentifer();
+    fn parseIdentifierExpr(self: *Self) ?ast.ExprAst {
+        const name = self.currentToken.unwrapIdentifier();
         self.moveNext();
 
         if (!self.nextIs(Token{ .Token = '(' })) {
             return ast.ExprAst{ .Variable = ast.VariableExpr.init(name) };
         }
 
+        self.moveNext();
         var args = std.ArrayList(ast.ExprAst).init(std.testing.allocator);
         defer args.deinit();
 
@@ -128,7 +136,7 @@ const Parser = struct {
     //   ::= parenexpr
     fn parsePrimary(self: *Self) ?ast.ExprAst {
         return switch (self.currentToken) {
-            .Identifer => self.parseIdentiferExpr(),
+            .Identifier => self.parseIdentifierExpr(),
             .Number => self.parseNumber(),
             Token{ .Token = '(' } => self.parseParenExpr(),
             else => logError(ast.ExprAst, "unknown token when expecting an expression"),
@@ -178,23 +186,23 @@ const Parser = struct {
     // prototype
     //   ::= id '(' id* ')'
     fn parsePrototype(self: *Self) ?ast.PrototypeAst {
-        if (!std.mem.eql(u8, @tagName(self.currentToken), "Identifer")) {
+        if (!std.mem.eql(u8, @tagName(self.currentToken), "Identifier")) {
             return logError(ast.PrototypeAst, "Expected function name in prototype");
         }
 
-        const fnName = self.currentToken.unwrapIdentifer();
-        self.moveNext();
+        const fnName = self.currentToken.unwrapIdentifier();
+        self.moveNext(); // eat fnname
 
         if (!self.nextIs(Token{ .Token = '(' })) {
             return logError(ast.PrototypeAst, "Expected '(' in prototype");
         }
-
+        self.moveNext(); // eat '('
+        //
         var args = std.ArrayList([]const u8).init(std.testing.allocator);
         defer args.deinit();
 
-        self.moveNext();
-        while (std.mem.eql(u8, @tagName(self.currentToken), "Identifer")) {
-            args.append(self.currentToken.unwrapIdentifer()) catch {
+        while (std.mem.eql(u8, @tagName(self.currentToken), "Identifier")) {
+            args.append(self.currentToken.unwrapIdentifier()) catch {
                 return null;
             };
             self.moveNext();
@@ -203,7 +211,7 @@ const Parser = struct {
         if (!self.nextIs(Token{ .Token = ')' })) {
             return logError(ast.PrototypeAst, "Expected ')' in prototype");
         }
-        self.moveNext();
+        self.moveNext(); // eat ')'
 
         return ast.PrototypeAst.init(fnName, args.items);
     }
@@ -213,7 +221,7 @@ const Parser = struct {
         if (!self.nextIs(Token.Def)) {
             unreachable;
         }
-        self.moveNext();
+        self.moveNext(); // eat def
 
         if (self.parsePrototype()) |proto| {
             if (self.parseExpression()) |e| {
@@ -228,6 +236,7 @@ const Parser = struct {
         if (!self.nextIs(Token.Extern)) {
             unreachable;
         }
+        self.moveNext(); // eat extern
         return self.parsePrototype();
     }
 
@@ -246,20 +255,22 @@ const Parser = struct {
             switch (self.currentToken) {
                 .EOF => return,
                 Token{ .Token = ';' } => {
-                    const n = self.moveNext();
-                    std.debug.print("{?}", .{n});
+                    _ = self.moveNext();
                 },
                 Token.Def => {
-                    const n = self.parseDefinition();
-                    std.debug.print("{?}", .{n});
+                    _ = self.parseDefinition() orelse {
+                        return;
+                    };
                 },
                 Token.Extern => {
-                    const n = self.parseExtern();
-                    std.debug.print("{?}", .{n});
+                    _ = self.parseExtern() orelse {
+                        return;
+                    };
                 },
                 else => {
-                    const n = self.parseTopLevelExpr();
-                    std.debug.print("{?}", .{n});
+                    _ = self.parseTopLevelExpr() orelse {
+                        return;
+                    };
                 },
             }
         }
@@ -268,6 +279,16 @@ const Parser = struct {
 
 test "mainLoop" {
     const src = "def foo(x y) x+foo(y, 4.0);";
+    std.debug.print("src => {s}\n", .{src});
+    var scanner = Scanner.init(src);
+    var parse = Parser.init(&scanner);
+    defer parse.deinit();
+    parse.mainLoop();
+}
+
+test "mainLoop2" {
+    const src = "extern sin(a)";
+    std.debug.print("src => {s}\n", .{src});
     var scanner = Scanner.init(src);
     var parse = Parser.init(&scanner);
     defer parse.deinit();

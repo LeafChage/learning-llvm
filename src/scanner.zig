@@ -2,68 +2,7 @@ const std = @import("std");
 const ascii = @import("std").ascii;
 const mem = @import("std").mem;
 const String = @import("./string.zig");
-
-pub const Token = union(enum) {
-    EOF: void,
-    Def: void,
-    Extern: void,
-    Identifer: []const u8,
-    Number: f32,
-    Token: u8,
-
-    const Self = @This();
-    pub fn eql(left: Self, right: Self) bool {
-        return switch (left) {
-            .EOF => switch (right) {
-                .EOF => true,
-                else => false,
-            },
-            .Def => switch (right) {
-                .Def => true,
-                else => false,
-            },
-            .Extern => switch (right) {
-                .Extern => true,
-                else => false,
-            },
-            .Token => switch (right) {
-                .Token => left.Token == right.Token,
-                else => false,
-            },
-            .Identifer => switch (right) {
-                .Identifer => std.mem.eql(u8, left.Identifer, right.Identifer),
-                else => false,
-            },
-            .Number => switch (right) {
-                .Number => left.Number == right.Number,
-                else => false,
-            },
-        };
-    }
-
-    pub fn unwrapToken(self: Self) u8 {
-        return switch (self) {
-            .Token => self.Token,
-            else => @panic("it's not Token.Token"),
-        };
-    }
-
-    pub fn unwrapIdentifer(self: Self) []const u8 {
-        return switch (self) {
-            .Identifer => self.Identifer,
-            else => @panic("it's not Token.Identifer"),
-        };
-    }
-};
-
-test "token eql" {
-    try std.testing.expect(Token.eql(Token.EOF, Token.EOF));
-    try std.testing.expect(Token.eql(Token.Def, Token.Def));
-    try std.testing.expect(Token.eql(Token.Extern, Token.Extern));
-    try std.testing.expect(Token.eql(Token{ .Identifer = "hello" }, Token{ .Identifer = "hello" }));
-    try std.testing.expect(Token.eql(Token{ .Token = '!' }, Token{ .Token = '!' }));
-    try std.testing.expect(Token.eql(Token{ .Number = 1 }, Token{ .Number = 1 }));
-}
+const Token = @import("./token.zig").Token;
 
 pub const Scanner = struct {
     i: usize,
@@ -103,6 +42,10 @@ pub const Scanner = struct {
     }
 
     fn identifier(self: *Self) !?Token {
+        if (!ascii.isAlphabetic(self.check())) {
+            return null;
+        }
+
         var id = try String.init("");
         while (ascii.isAlphanumeric(self.check())) {
             try id.add(self.next());
@@ -117,7 +60,7 @@ pub const Scanner = struct {
         if (mem.eql(u8, id_str, "extern")) {
             return Token.Extern;
         }
-        return Token{ .Identifer = id_str };
+        return Token{ .Identifier = id_str };
     }
 
     fn number(self: *Self) !?Token {
@@ -152,14 +95,13 @@ pub const Scanner = struct {
         if (try self.identifier() orelse try self.number()) |t| {
             return t;
         }
+        if (self.check() == 0) {
+            return Token.EOF;
+        }
         if (self.check() == '#') {
             _ = try self.comment();
-            if (self.check() == '0') {
-                return Token.EOF;
-            } else {
-                self.skipNext();
-                return self.nextToken();
-            }
+            self.skipNext();
+            return self.nextToken();
         } else {
             return self.token();
         }
@@ -184,7 +126,14 @@ test "identifier" {
     const src = "name ";
     var scanner = Scanner.init(src);
     const v: Token = try scanner.identifier() orelse @panic("unexpected");
-    try std.testing.expectEqualDeep(v, Token{ .Identifer = "name" });
+    try std.testing.expectEqualDeep(v, Token{ .Identifier = "name" });
+}
+
+test "not identifier" {
+    const src = "123.1";
+    var scanner = Scanner.init(src);
+    const v = try scanner.identifier();
+    try std.testing.expectEqual(v, null);
 }
 
 test "number" {
@@ -194,11 +143,19 @@ test "number" {
     try std.testing.expectEqualDeep(v, Token{ .Number = @as(f32, 123) });
 }
 
+test "float" {
+    const src = "123.1";
+    var scanner = Scanner.init(src);
+    const v: Token = try scanner.number() orelse @panic("unexpected");
+    try std.testing.expectEqualDeep(v, Token{ .Number = @as(f32, 123.1) });
+}
+
 test "nextToken" {
     const src = "##........ \n extern  def name (";
     var scanner = Scanner.init(src);
     try std.testing.expectEqual(try scanner.nextToken(), Token.Extern);
     try std.testing.expectEqual(try scanner.nextToken(), Token.Def);
-    try std.testing.expectEqualDeep(try scanner.nextToken(), Token{ .Identifer = "name" });
+    try std.testing.expectEqualDeep(try scanner.nextToken(), Token{ .Identifier = "name" });
     try std.testing.expectEqualDeep(try scanner.nextToken(), Token{ .Token = '(' });
+    try std.testing.expectEqualDeep(try scanner.nextToken(), Token.EOF);
 }
